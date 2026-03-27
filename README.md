@@ -22,6 +22,8 @@ GITHUB_USERNAME=your_username
 
 ## Usage
 
+### Standalone CLI
+
 ```bash
 # Voice mode (default)
 uv run python main.py
@@ -31,6 +33,24 @@ uv run python main.py --text
 
 # With spoken response
 uv run python main.py --speak
+```
+
+### Mistral Vibe Skill
+
+Install as a Vibe skill:
+
+```bash
+# Symlink into your global skills directory
+ln -s $(pwd) ~/.vibe/skills/gm
+
+# Or into your project
+ln -s $(pwd) .vibe/skills/gm
+```
+
+Then in Vibe:
+
+```
+/gm
 ```
 
 ## Stack
