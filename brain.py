@@ -2,9 +2,10 @@
 
 import json
 import re
+from collections.abc import Iterator
 
 from config import LLM_MODEL
-from github_client import fetch_context, get_issue_detail
+from github_client import get_issue_detail
 
 BRIEFING_PROMPT = """\
 You are a concise dev assistant. The user just said: "{query}"
@@ -59,10 +60,8 @@ def _extract_issue_number(query: str) -> int | None:
     return None
 
 
-def generate_briefing(client, query: str) -> str:
-    """Generate a briefing or answer based on the user's voice query."""
-    context = fetch_context()
-
+def _build_prompt(query: str, context: dict) -> str:
+    """Build the LLM prompt from query and pre-fetched context."""
     issue_number = _extract_issue_number(query)
     extra = ""
     if issue_number:
@@ -76,7 +75,7 @@ def generate_briefing(client, query: str) -> str:
     prs_text = _format_prs(context["prs"])
     commits_text = _format_commits(context["commits"])
 
-    prompt = BRIEFING_PROMPT.format(
+    return BRIEFING_PROMPT.format(
         query=query,
         issue_count=len(context["issues"]),
         issues=issues_text + extra,
@@ -86,8 +85,15 @@ def generate_briefing(client, query: str) -> str:
         commits=commits_text,
     )
 
-    response = client.chat.complete(
+
+def generate_briefing_stream(client, query: str, context: dict) -> Iterator[str]:
+    """Stream the briefing token by token."""
+    prompt = _build_prompt(query, context)
+
+    for chunk in client.chat.stream(
         model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-    )
-    return response.choices[0].message.content
+    ):
+        delta = chunk.data.choices[0].delta.content
+        if delta:
+            yield delta
