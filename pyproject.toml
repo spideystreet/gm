@@ -1,0 +1,16 @@
+[project]
+name = "gm"
+version = "0.1.0"
+description = "Your morning standup, replaced by voice + AI"
+requires-python = ">=3.10"
+dependencies = [
+    "mistralai>=2.1.0",
+    "sounddevice>=0.5.0",
+    "scipy>=1.12.0",
+    "PyGithub>=2.3.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+gm = "main:main"
