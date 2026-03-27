@@ -1,16 +1,23 @@
 """GitHub data fetching via PyGithub."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from github import Github
 
 from config import GITHUB_REPO, GITHUB_TOKEN, GITHUB_USERNAME
 
+_github = None
+_repo = None
+
 
 def _get_repo():
-    """Get the configured GitHub repository."""
-    g = Github(GITHUB_TOKEN)
-    return g.get_repo(GITHUB_REPO)
+    """Get the configured GitHub repository (cached)."""
+    global _github, _repo
+    if _repo is None:
+        _github = Github(GITHUB_TOKEN)
+        _repo = _github.get_repo(GITHUB_REPO)
+    return _repo
 
 
 def get_assigned_issues() -> list[dict]:
@@ -107,9 +114,14 @@ def get_issue_detail(issue_number: int) -> dict:
 
 
 def fetch_context() -> dict:
-    """Fetch all GitHub context for the daily briefing."""
+    """Fetch all GitHub context for the daily briefing (parallel)."""
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        issues_fut = pool.submit(get_assigned_issues)
+        prs_fut = pool.submit(get_open_prs)
+        commits_fut = pool.submit(get_recent_commits)
+
     return {
-        "issues": get_assigned_issues(),
-        "prs": get_open_prs(),
-        "commits": get_recent_commits(),
+        "issues": issues_fut.result(),
+        "prs": prs_fut.result(),
+        "commits": commits_fut.result(),
     }
