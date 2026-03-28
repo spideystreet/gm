@@ -4,32 +4,45 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, Future
 
 from mistralai.client import Mistral
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.live import Live
 from rich.text import Text
 
 from config import GITHUB_REPO, GITHUB_TOKEN, GITHUB_USERNAME, MISTRAL_API_KEY
+from viz import SpeakingWaveform
 
 console = Console()
 
+# Mistral palette
+_O = "#ff7000"
+_OD = "#884400"
 
-def _render_chat(history: list[dict], streaming: str | None = None) -> Text:
-    """Render chat history as conversation bubbles."""
+
+def _render_chat(
+    history: list[dict],
+    streaming: str | None = None,
+    speaking: bool = False,
+):
+    """Render chat history with Mistral pixel aesthetic."""
     output = Text()
     for msg in history:
         if msg["role"] == "user":
-            output.append("  🎙 ", style="bold cyan")
-            output.append(msg["content"], style="cyan")
+            output.append("  ▌ ", style="bold cyan")
+            output.append(msg["content"], style="white")
             output.append("\n\n")
         elif msg["role"] == "assistant":
-            output.append("  🤖 ", style="bold green")
-            output.append(msg["content"], style="green")
+            output.append(f"  ▌ ", style=f"bold {_O}")
+            output.append(msg["content"], style="white")
             output.append("\n\n")
 
     if streaming is not None:
-        output.append("  🤖 ", style="bold green")
-        output.append(streaming or "...", style="green")
+        output.append(f"  ▌ ", style=f"bold {_O}")
+        output.append(streaming or "░░░", style="white")
+        if speaking:
+            output.append("\n")
+            return Group(output, SpeakingWaveform())
+        output.append("\n")
 
     return output
 
@@ -37,9 +50,8 @@ def _render_chat(history: list[dict], streaming: str | None = None) -> Text:
 def _get_query(client, text_mode: bool) -> str:
     """Get user input via voice or text."""
     if text_mode:
-        return console.input("[bold cyan]>[/] ")
+        return console.input("[bold cyan]▍[/] ")
 
-    console.print("[dim]🎙 Listening...[/]")
     try:
         from audio import record
         from voxtral import transcribe
@@ -49,7 +61,7 @@ def _get_query(client, text_mode: bool) -> str:
         return query
     except Exception as e:
         console.print(f"[red]Audio error: {e}[/]")
-        return console.input("[bold cyan]>[/] ")
+        return console.input("[bold cyan]▍[/] ")
 
 
 def main() -> None:
@@ -87,7 +99,12 @@ def main() -> None:
 
     from brain import build_system_message, enrich_query, stream_response
 
-    console.print(Panel("[bold]gm[/] — voice conversation mode\n[dim]Ctrl+C to quit[/]", border_style="blue"))
+    console.print(
+        Panel(
+            f"[bold {_O}]gm[/] — voice conversation mode\n[dim]Ctrl+C to quit[/]",
+            border_style=_O,
+        )
+    )
 
     # First query while GitHub context loads
     query = _get_query(client, text_mode)
@@ -111,14 +128,16 @@ def main() -> None:
             token_stream = speak_streaming(client, token_stream)
 
         with Live(
-            _render_chat(chat_history, streaming="..."),
+            _render_chat(chat_history, streaming="░░░", speaking=speak_mode),
             console=console,
             refresh_per_second=15,
             vertical_overflow="visible",
         ) as live:
             for chunk in token_stream:
                 full_text += chunk
-                live.update(_render_chat(chat_history, streaming=full_text))
+                live.update(
+                    _render_chat(chat_history, streaming=full_text, speaking=speak_mode)
+                )
 
             # Add to history inside Live so final render includes it
             messages.append({"role": "assistant", "content": full_text})
@@ -129,7 +148,7 @@ def main() -> None:
         try:
             query = _get_query(client, text_mode)
         except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]bye![/]")
+            console.print(f"\n[dim {_OD}]bye![/]")
             break
 
         if not query.strip():
