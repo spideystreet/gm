@@ -7,24 +7,18 @@ from collections.abc import Iterator
 from config import LLM_MODEL
 from github_client import get_issue_detail
 
-BRIEFING_PROMPT = """\
-You are a concise dev assistant. The user just said: "{query}"
+SYSTEM_PROMPT = """\
+You are a concise dev assistant having a voice conversation with a developer.
+You have access to their GitHub context below.
 
-Here is their GitHub context for today:
+{context}
 
-**Assigned Issues ({issue_count}):**
-{issues}
-
-**Open PRs ({pr_count}):**
-{prs}
-
-**Commits (last 24h, {commit_count}):**
-{commits}
-
-Give a clear, actionable morning briefing. Be concise — bullet points, no fluff.
-If the user asked a specific question, answer it directly using the context.
-If they asked about a specific issue number, use the detailed info provided.
-Always mention what needs attention first (failing CI, review requests, high priority)."""
+Rules:
+- Use short, spoken French sentences. No markdown, no bullet points, no special characters.
+- Be concise and conversational, like a quick chat with a colleague.
+- If the user asks about a specific issue number, use the detailed info provided.
+- Mention what needs attention first (failing CI, review requests, high priority).
+- Never use asterisks, dashes, hashes, or any formatting — just plain spoken text."""
 
 
 def _format_issues(issues: list[dict]) -> str:
@@ -60,39 +54,41 @@ def _extract_issue_number(query: str) -> int | None:
     return None
 
 
-def _build_prompt(query: str, context: dict) -> str:
-    """Build the LLM prompt from query and pre-fetched context."""
-    issue_number = _extract_issue_number(query)
-    extra = ""
-    if issue_number:
-        try:
-            detail = get_issue_detail(issue_number)
-            extra = f"\n**Detail for #{issue_number}:**\n{json.dumps(detail, indent=2)}"
-        except Exception:
-            extra = f"\n(Could not fetch details for #{issue_number})"
-
+def build_system_message(context: dict) -> dict:
+    """Build the system message with GitHub context."""
     issues_text = _format_issues(context["issues"])
     prs_text = _format_prs(context["prs"])
     commits_text = _format_commits(context["commits"])
 
-    return BRIEFING_PROMPT.format(
-        query=query,
-        issue_count=len(context["issues"]),
-        issues=issues_text + extra,
-        pr_count=len(context["prs"]),
-        prs=prs_text,
-        commit_count=len(context["commits"]),
-        commits=commits_text,
+    context_block = (
+        f"Assigned Issues ({len(context['issues'])}):\n{issues_text}\n\n"
+        f"Open PRs ({len(context['prs'])}):\n{prs_text}\n\n"
+        f"Commits (last 24h, {len(context['commits'])}):\n{commits_text}"
     )
 
+    return {
+        "role": "system",
+        "content": SYSTEM_PROMPT.format(context=context_block),
+    }
 
-def generate_briefing_stream(client, query: str, context: dict) -> Iterator[str]:
-    """Stream the briefing token by token."""
-    prompt = _build_prompt(query, context)
 
+def enrich_query(query: str) -> str:
+    """Fetch extra issue detail if the query mentions an issue number."""
+    issue_number = _extract_issue_number(query)
+    if issue_number:
+        try:
+            detail = get_issue_detail(issue_number)
+            return f"{query}\n\n(Detail for #{issue_number}: {json.dumps(detail)})"
+        except Exception:
+            pass
+    return query
+
+
+def stream_response(client, messages: list[dict]) -> Iterator[str]:
+    """Stream the LLM response token by token."""
     for chunk in client.chat.stream(
         model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
     ):
         delta = chunk.data.choices[0].delta.content
         if delta:

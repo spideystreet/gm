@@ -5,12 +5,51 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from mistralai.client import Mistral
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
+from rich.live import Live
+from rich.text import Text
 
 from config import GITHUB_REPO, GITHUB_TOKEN, GITHUB_USERNAME, MISTRAL_API_KEY
 
 console = Console()
+
+
+def _render_chat(history: list[dict], streaming: str | None = None) -> Text:
+    """Render chat history as conversation bubbles."""
+    output = Text()
+    for msg in history:
+        if msg["role"] == "user":
+            output.append("  🎙 ", style="bold cyan")
+            output.append(msg["content"], style="cyan")
+            output.append("\n\n")
+        elif msg["role"] == "assistant":
+            output.append("  🤖 ", style="bold green")
+            output.append(msg["content"], style="green")
+            output.append("\n\n")
+
+    if streaming is not None:
+        output.append("  🤖 ", style="bold green")
+        output.append(streaming or "...", style="green")
+
+    return output
+
+
+def _get_query(client, text_mode: bool) -> str:
+    """Get user input via voice or text."""
+    if text_mode:
+        return console.input("[bold cyan]>[/] ")
+
+    console.print("[dim]🎙 Listening...[/]")
+    try:
+        from audio import record
+        from voxtral import transcribe
+
+        audio_data = record()
+        query = transcribe(client, audio_data)
+        return query
+    except Exception as e:
+        console.print(f"[red]Audio error: {e}[/]")
+        return console.input("[bold cyan]>[/] ")
 
 
 def main() -> None:
@@ -42,52 +81,59 @@ def main() -> None:
     client = Mistral(api_key=MISTRAL_API_KEY)
     pool = ThreadPoolExecutor(max_workers=2)
 
-    # Start GitHub fetch immediately (independent of voice input)
+    # Fetch GitHub context once at startup
     from github_client import fetch_context
     context_fut: Future = pool.submit(fetch_context)
 
-    if text_mode:
-        query = console.input("[bold]>[/] ")
-    else:
-        console.print("[dim]Listening...[/]")
-        try:
-            from audio import record
-            from voxtral import transcribe
+    from brain import build_system_message, enrich_query, stream_response
 
-            audio_data = record()
-            console.print("[dim]Transcribing...[/]")
-            query = transcribe(client, audio_data)
-        except Exception as e:
-            console.print(f"[red]Audio error: {e}[/]")
-            console.print("[dim]Falling back to text input.[/]")
-            query = console.input("[bold]>[/] ")
+    console.print(Panel("[bold]gm[/] — voice conversation mode\n[dim]Ctrl+C to quit[/]", border_style="blue"))
 
-    console.print(f"[dim]> {query}[/]\n")
+    # First query while GitHub context loads
+    query = _get_query(client, text_mode)
 
-    from brain import generate_briefing_stream
+    context = context_fut.result()
+    messages = [build_system_message(context)]
+    chat_history: list[dict] = []
 
-    try:
-        # Wait for GitHub context (likely already done during recording)
-        context = context_fut.result()
+    # Conversation loop
+    while True:
+        chat_history.append({"role": "user", "content": query})
 
-        # Stream LLM response with live display
+        enriched = enrich_query(query)
+        messages.append({"role": "user", "content": enriched})
+
         full_text = ""
-        with Live(Panel("...", title="[bold]gm[/]", border_style="green"), console=console, refresh_per_second=10) as live:
-            for chunk in generate_briefing_stream(client, query, context):
+        token_stream = stream_response(client, messages)
+
+        if speak_mode:
+            from voxtral import speak_streaming
+            token_stream = speak_streaming(client, token_stream)
+
+        with Live(
+            _render_chat(chat_history, streaming="..."),
+            console=console,
+            refresh_per_second=15,
+            vertical_overflow="visible",
+        ) as live:
+            for chunk in token_stream:
                 full_text += chunk
-                live.update(Panel(full_text, title="[bold]gm[/]", border_style="green"))
+                live.update(_render_chat(chat_history, streaming=full_text))
 
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/]")
-        sys.exit(1)
+            # Add to history inside Live so final render includes it
+            messages.append({"role": "assistant", "content": full_text})
+            chat_history.append({"role": "assistant", "content": full_text})
+            live.update(_render_chat(chat_history))
 
-    if speak_mode:
+        # Next turn
         try:
-            from voxtral import speak_chunked
+            query = _get_query(client, text_mode)
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]bye![/]")
+            break
 
-            speak_chunked(client, full_text)
-        except Exception as e:
-            console.print(f"[dim]TTS error: {e}[/]")
+        if not query.strip():
+            continue
 
     pool.shutdown(wait=False)
 
