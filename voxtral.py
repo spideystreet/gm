@@ -37,15 +37,6 @@ def transcribe(client, audio_data: bytes) -> str:
     return result.text.strip()
 
 
-def _play_pcm(pcm_bytes: bytes) -> None:
-    """Play raw PCM float32 audio at 24kHz."""
-    audio = np.frombuffer(pcm_bytes, dtype=np.float32)
-    if len(audio) == 0:
-        return
-    sd.play(audio, samplerate=TTS_SAMPLE_RATE, device=AUDIO_OUTPUT_DEVICE)
-    sd.wait()
-
-
 def _stream_tts_to_queue(text: str, audio_queue: queue.Queue) -> None:
     """Stream TTS via SSE and push PCM chunks directly to the audio queue."""
     headers = {
@@ -90,12 +81,25 @@ def speak_streaming(client, token_stream: Iterator[str]) -> Iterator[str]:
     sentence_queue: queue.Queue[str | None] = queue.Queue()
 
     def _player() -> None:
-        """Play audio chunks as they arrive."""
-        while True:
-            data = audio_queue.get()
-            if data is None:
-                break
-            _play_pcm(data)
+        """Play audio chunks through a persistent output stream."""
+        stream = sd.OutputStream(
+            samplerate=TTS_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            device=AUDIO_OUTPUT_DEVICE,
+        )
+        stream.start()
+        try:
+            while True:
+                data = audio_queue.get()
+                if data is None:
+                    break
+                audio = np.frombuffer(data, dtype=np.float32)
+                if len(audio) > 0:
+                    stream.write(audio.reshape(-1, 1))
+        finally:
+            stream.stop()
+            stream.close()
 
     def _tts_worker() -> None:
         """Process sentences sequentially to preserve order."""
